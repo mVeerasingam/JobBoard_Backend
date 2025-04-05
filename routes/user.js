@@ -3,6 +3,7 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { formatJobDetails } = require('./jobs');
+const requireAuth = require('../mw/auth');
 
 // User Schema
 const userSchema = new mongoose.Schema({
@@ -55,6 +56,7 @@ router.post('/signup', async (req, res) => {
             userId: user._id
         });
     } catch (err) {
+        console.log(err)
         res.status(500).json({
             success: false,
             error: 'Server error'
@@ -67,8 +69,7 @@ router.post('/signin', async (req, res) => {
     try {
         const { username, password } = req.body;
 
-        // Log the request body to ensure data is being sent correctly
-        console.log('Signin attempt:', req.body);
+        console.log('Signin attempt for:', username);
 
         if (!username || !password) {
             return res.status(400).json({
@@ -87,13 +88,16 @@ router.post('/signin', async (req, res) => {
         }
 
         // Compare the provided password with the stored hashed password
-        const isMatch = await bcrypt.compare(password, user.password);
+        const isMatch = await bcrypt.compare(password + process.env.EXTRA_BCRYPT_STRING, user.password);
         if (!isMatch) {
             return res.status(400).json({
                 success: false,
                 error: 'Invalid password'
             });
         }
+
+        req.session.userId = user._id;
+        req.session.username = user.username;
 
         // Successful login
         res.status(200).json({
@@ -114,139 +118,101 @@ router.post('/signin', async (req, res) => {
 });
 
 
-// Save a job for logged-in user
-router.post('/users/:userId/save-job/:jobId', async (req, res) => {
+router.post('/save-jobs/:jobId', requireAuth, async (req, res) => {
     try {
-        const { userId, jobId } = req.params;
+        const jobId = req.params.jobId;
+        const userId = req.session.userId;
 
-        // Validate IDs
-        if (!mongoose.Types.ObjectId.isValid(userId)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Invalid user ID format'
-            });
+        if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(jobId)) {
+            return res.status(400).json({ success: false, error: 'Invalid ID format' });
         }
 
-        if (!mongoose.Types.ObjectId.isValid(jobId)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Invalid job ID format'
-            });
-        }
-
-        // Find user and job
         const user = await User.findById(userId);
         const Job = mongoose.model('job');
         const job = await Job.findById(jobId);
 
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                error: 'User not found'
-            });
+        if (!user || !job) {
+            return res.status(404).json({ success: false, error: 'User or job not found' });
         }
 
-        if (!job) {
-            return res.status(404).json({
-                success: false,
-                error: 'Job not found'
-            });
-        }
-
-        // Check if job is already saved
         if (user.savedJobs.includes(jobId)) {
-            return res.json({
-                success: true,
-                message: 'Job already saved',
-                savedJobs: user.savedJobs
-            });
+            return res.json({ success: true, message: 'Job already saved', savedJobs: user.savedJobs });
         }
 
-        // Save the job
         user.savedJobs.push(jobId);
         await user.save();
 
-        res.json({
-            success: true,
-            message: 'Job saved successfully',
-            savedJobs: user.savedJobs
-        });
+        res.json({ success: true, message: 'Job saved successfully', savedJobs: user.savedJobs });
 
     } catch (err) {
         console.error('Error saving job:', err);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to save job',
-            details: process.env.NODE_ENV === 'development' ? err.message : undefined
-        });
+        res.status(500).json({ success: false, error: 'Failed to save job' });
     }
 });
 
-router.get('/users/:userId/saved-jobs', async (req, res) => {
+// Get saved jobs
+router.get('/saved-jobs', requireAuth, async (req, res) => {
     try {
-        const user = await User.findById(req.params.userId).populate('savedJobs');
-        if (!user) return res.status(404).json({ error: 'User not found' });
+        const { userId } = req.session;
+
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({ success: false, error: 'Invalid user ID format' });
+        }
+
+        // Find user by session userId
+        const user = await User.findById(userId).populate('savedJobs');
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        const jobs = user.savedJobs.map(formatJobDetails); // Format each job in the savedJobs array
 
         res.json({
             success: true,
-            jobs: user.savedJobs.map(formatJobDetails)
+            jobs
         });
     } catch (err) {
         console.error('Error:', err);
-        res.status(500).json({ error: 'Server error' });
+        res.status(500).json({ success: false, error: 'Server error' });
     }
 });
 
-
-// Delete a saved job
-router.delete('/users/:userId/saved-jobs/:jobId', async (req, res) => {
+router.delete('/saved-jobs/:jobId', requireAuth, async (req, res) => {
     try {
-        const { userId, jobId } = req.params;
+        const { userId } = req.session;
+        const { jobId } = req.params;
 
-        // Validate IDs
+        // Validate ObjectId formats
         if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(jobId)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Invalid ID format'
-            });
+            return res.status(400).json({ success: false, error: 'Invalid ID format' });
         }
 
-        // Find user
+        // Find user and check if job is in saved jobs
         const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                error: 'User not found'
-            });
-        }
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
-        // Check if job exists in saved jobs
-        const jobIndex = user.savedJobs.findIndex(id => id.toString() === jobId);
-        if (jobIndex === -1) {
-            return res.status(404).json({
-                success: false,
-                error: 'Job not found in saved jobs'
-            });
+        // Check if the job is in saved jobs
+        if (!user.savedJobs.includes(jobId)) {
+            return res.status(404).json({ success: false, error: 'Job not found in saved jobs' });
         }
 
         // Remove job from saved jobs
-        user.savedJobs.splice(jobIndex, 1);
+        user.savedJobs = user.savedJobs.filter(id => id.toString() !== jobId);
         await user.save();
 
-        res.json({
-            success: true,
-            message: 'Job removed from saved jobs',
-            remainingJobs: user.savedJobs.length
-        });
-
+        res.json({ success: true, message: 'Job removed from saved jobs' });
     } catch (err) {
         console.error('Error removing saved job:', err);
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            details: process.env.NODE_ENV === 'development' ? err.message : undefined
-        });
+        res.status(500).json({ success: false, error: 'Server error' });
     }
 });
+
+
+// Logout
+router.post('/logout', (req, res) => {
+    req.session.destroy(err => {
+        if (err) return res.status(500).json({ success: false, error: 'Logout failed' });
+        res.json({ success: true, message: 'Logged out successfully' });
+    });
+});
+
 
 exports.routes = router;

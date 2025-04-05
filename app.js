@@ -3,6 +3,7 @@ const mongoose = require('mongoose')
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
+const session = require('express-session');
 
 const app = express();
 
@@ -12,6 +13,13 @@ const jobRoutes = require('./routes/jobs');
 app.use(express.json()) // Won't parse JSON data sent to server without this
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'supersecretkey',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false } // set to true if using HTTPS
+}));
 
 app.use('/', userRoutes.routes);
 app.use('/', jobRoutes.routes);
