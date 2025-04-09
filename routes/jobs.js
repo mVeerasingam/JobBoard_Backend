@@ -23,6 +23,7 @@ const jobSchema = new mongoose.Schema({
   EducationalRequirements: String
 });
 
+// object format for the main list of jobs to be used in the main job menu
 function formatJobListing(job) {
   return {
     id: job._id,
@@ -40,6 +41,8 @@ function formatJobListing(job) {
   };
 }
 
+// format for how the jobs will look like when you acctually inspect them.
+// this is also what will be the formatting of the job details if a user saves a job.
 function formatJobDetails(job) {
   return {
     id: job._id,

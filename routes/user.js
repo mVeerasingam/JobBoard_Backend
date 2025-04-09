@@ -2,126 +2,81 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const { formatJobDetails } = require('./jobs');
 const requireAuth = require('../mw/auth');
 
-// User Schema
 const userSchema = new mongoose.Schema({
-    username: {
-        type: String,
-        required: true,
-        unique: true
-    },
-    password: {
-        type: String,
-        required: true
-    },
-    savedJobs: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'job'
-    }]
+    username: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    savedJobs: [{ type: mongoose.Schema.Types.ObjectId, ref: 'job' }]
 });
 
-// Create User model
 const User = mongoose.model('user', userSchema);
 
-// Register a new user
+// Signup
 router.post('/signup', async (req, res) => {
     try {
         const { username, password } = req.body;
 
-        // Check if user exists
         const existingUser = await User.findOne({ username });
         if (existingUser) {
-            return res.status(400).json({
-                success: false,
-                error: 'Username already exists'
-            });
+            return res.status(400).json({ success: false, error: 'Username already exists' });
         }
 
         const hashedPassword = bcrypt.hashSync(password + process.env.EXTRA_BCRYPT_STRING, 12);
 
-        // Create new user object
-        const user = new User({
-            username,
-            password: hashedPassword,
-            savedJobs: []
-        });
-
+        const user = new User({ username, password: hashedPassword });
         await user.save();
 
-        res.status(201).json({
-            success: true,
-            message: 'User registered successfully',
-            userId: user._id
-        });
+        res.status(201).json({ success: true, message: 'User registered successfully' });
     } catch (err) {
-        console.log(err)
-        res.status(500).json({
-            success: false,
-            error: 'Server error'
-        });
+        console.log(err);
+        res.status(500).json({ success: false, error: 'Server error' });
     }
 });
 
-// Login
+// Signin with JWT
 router.post('/signin', async (req, res) => {
     try {
         const { username, password } = req.body;
-
         console.log('Signin attempt for:', username);
 
         if (!username || !password) {
-            return res.status(400).json({
-                success: false,
-                error: 'Username and password are required'
-            });
+            return res.status(400).json({ success: false, error: 'Username and password are required' });
         }
 
-        // Find the user by username
         const user = await User.findOne({ username });
-        if (!user) {
-            return res.status(400).json({
-                success: false,
-                error: 'User not found'
-            });
-        }
+        if (!user) return res.status(400).json({ success: false, error: 'User not found' });
 
-        // Compare the provided password with the stored hashed password
         const isMatch = await bcrypt.compare(password + process.env.EXTRA_BCRYPT_STRING, user.password);
-        if (!isMatch) {
-            return res.status(400).json({
-                success: false,
-                error: 'Invalid password'
-            });
-        }
+        if (!isMatch) return res.status(400).json({ success: false, error: 'Invalid password' });
 
-        req.session.userId = user._id;
-        req.session.username = user.username;
+        const token = jwt.sign(
+            { userId: user._id, username: user.username },
+            process.env.JWT_SECRET || 'supersecretjwtkey',
+            { expiresIn: '7d' }
+        );
 
-        // Successful login
         res.status(200).json({
             success: true,
             message: 'Login successful',
+            token,
             userId: user._id,
             username: user.username
         });
 
     } catch (err) {
-        console.error('Error during signin:', err);  // Log the full error for debugging
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            details: process.env.NODE_ENV === 'development' ? err.message : undefined
-        });
+        console.error('Error during signin:', err);
+        res.status(500).json({ success: false, error: 'Server error' });
     }
 });
 
-
+// Save Job
 router.post('/save-jobs/:jobId', requireAuth, async (req, res) => {
     try {
         const jobId = req.params.jobId;
-        const userId = req.session.userId;
+        const userId = req.user.userId;
 
         if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(jobId)) {
             return res.status(400).json({ success: false, error: 'Invalid ID format' });
@@ -143,58 +98,50 @@ router.post('/save-jobs/:jobId', requireAuth, async (req, res) => {
         await user.save();
 
         res.json({ success: true, message: 'Job saved successfully', savedJobs: user.savedJobs });
-
     } catch (err) {
         console.error('Error saving job:', err);
         res.status(500).json({ success: false, error: 'Failed to save job' });
     }
 });
 
-// Get saved jobs
+// Get Saved Jobs
 router.get('/saved-jobs', requireAuth, async (req, res) => {
     try {
-        const { userId } = req.session;
+        const userId = req.user.userId;
 
         if (!mongoose.Types.ObjectId.isValid(userId)) {
             return res.status(400).json({ success: false, error: 'Invalid user ID format' });
         }
 
-        // Find user by session userId
         const user = await User.findById(userId).populate('savedJobs');
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
-        const jobs = user.savedJobs.map(formatJobDetails); // Format each job in the savedJobs array
+        const jobs = user.savedJobs.map(formatJobDetails);
 
-        res.json({
-            success: true,
-            jobs
-        });
+        res.json({ success: true, jobs });
     } catch (err) {
         console.error('Error:', err);
         res.status(500).json({ success: false, error: 'Server error' });
     }
 });
 
+// Remove Saved Job
 router.delete('/saved-jobs/:jobId', requireAuth, async (req, res) => {
     try {
-        const { userId } = req.session;
+        const { userId } = req.user;
         const { jobId } = req.params;
 
-        // Validate ObjectId formats
         if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(jobId)) {
             return res.status(400).json({ success: false, error: 'Invalid ID format' });
         }
 
-        // Find user and check if job is in saved jobs
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
-        // Check if the job is in saved jobs
         if (!user.savedJobs.includes(jobId)) {
             return res.status(404).json({ success: false, error: 'Job not found in saved jobs' });
         }
 
-        // Remove job from saved jobs
         user.savedJobs = user.savedJobs.filter(id => id.toString() !== jobId);
         await user.save();
 
@@ -205,14 +152,18 @@ router.delete('/saved-jobs/:jobId', requireAuth, async (req, res) => {
     }
 });
 
+// Signout
+router.post('/signout', (req, res) => {
+    // This is just a simple signout route since JWT is stateless.
+    // To "sign out" you can simply remove the token on the client side.
 
-// Logout
-router.post('/logout', (req, res) => {
-    req.session.destroy(err => {
-        if (err) return res.status(500).json({ success: false, error: 'Logout failed' });
-        res.json({ success: true, message: 'Logged out successfully' });
+    // If using cookies, you could clear the cookie here:
+    // res.clearCookie('token');
+
+    res.json({
+        success: true,
+        message: 'Successfully logged out.'
     });
 });
-
 
 exports.routes = router;
